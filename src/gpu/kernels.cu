@@ -458,7 +458,9 @@ namespace ParaFROST {
 		dim3 grid2D(1, 1, 1);
 		LOGN2(2, "  configuring ERE kernel with ");
 		OPTIMIZEBLOCKSERE(vars->numElected, block2D, gopts.ere);
+
 		const grid_t adjustedNBlocks = adjustBlocksBasedOnHistory(nBlocks, OP_TYPE_ERE);
+
 		OPTIMIZESHARED(block2D.y, SH_MAX_ERE_OUT * sizeof(uint32));
 		grid2D.y = adjustedNBlocks;
 		LOGENDING(2, 5, "(%d/%d ths, %d/%d bls) and %zd KB shared memory",
@@ -475,6 +477,7 @@ namespace ParaFROST {
     	cudaEventElapsedTime(&runtime, start, stop);
 
 		addKernelPerfCount(runtime, adjustedNBlocks, OP_TYPE_ERE);
+		
 		if (gopts.profile_gpu) cutimer->stop(), cutimer->ere += cutimer->gpuTime();
 		if (gopts.sync_always) {
 			LASTERR("ERE Elimination failed");

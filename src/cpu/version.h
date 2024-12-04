@@ -28,4 +28,4 @@ namespace ParaFROST {
 }
 #define VERSION "3.2.5"
 #define OSYSTEM "linux asus-f16 5.15.167.4-microsoft-standard-wsl2 x86_64"
-#define DATE "Wed Dec  4 14:33:41 EST 2024"
+#define DATE "Wed Dec  4 15:21:48 EST 2024"
