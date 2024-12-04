@@ -26,7 +26,89 @@ namespace ParaFROST {
 
 	// x
 	typedef uint32 grid_t;
+	struct GlobalPerfCount{
+		float previous_runtime;
+		float runtime;
+		grid_t blocks;
+		int op_type;
+		GlobalPerfCount *next;
+	};
 
+
+	GlobalPerfCount *perf_count_head = nullptr;
+	void addKernelPerfCount(float runtime, grid_t blocks, int op_type) {
+		float previous_runtime = 0.0;
+		GlobalPerfCount *r = (GlobalPerfCount *)malloc(sizeof(GlobalPerfCount));
+		r->runtime = runtime;
+		r->blocks = blocks;
+		r->previous_runtime = previous_runtime;
+		r->next = nullptr;
+
+		if (perf_count_head == nullptr) {
+			perf_count_head = r;
+		}
+		else {
+			GlobalPerfCount *iterator = perf_count_head;
+			while (iterator->next != nullptr) {
+				iterator = iterator->next;
+				if (iterator->op_type == op_type)
+					previous_runtime = iterator->runtime;
+			}
+			iterator->next = r;
+			r->previous_runtime = previous_runtime;
+		}
+	}
+
+
+	void cleanupPerfCount() {
+		GlobalPerfCount* temp = perf_count_head;
+		while (temp != nullptr) {
+			GlobalPerfCount* toDelete = temp;
+			temp = temp->next;
+			free(toDelete);
+		}
+		perf_count_head = nullptr;
+	}
+
+	grid_t adjustBlocksBasedOnHistory(grid_t currentBlocks, int op_type) {
+
+		GlobalPerfCount* temp = perf_count_head;
+		float totalRuntime = 0.0f;
+		int count = 0;
+
+		while (temp != nullptr) {
+			if (temp->op_type == op_type) {
+				totalRuntime += temp->runtime;
+				count++;
+			}
+			temp = temp->next;
+		}
+
+		float avgRuntime = count > 0 ? totalRuntime / count : 0.0f;
+
+
+		if (count > 1) {
+			GlobalPerfCount *lastRun = nullptr;
+			temp = perf_count_head;
+			while (temp->next != nullptr) {
+				if (temp->op_type == op_type)
+					lastRun = temp;
+				temp = temp->next; 
+			}
+
+			if (lastRun->runtime > avgRuntime * 1.1) {
+				return (grid_t)std::max(1, (int)(currentBlocks * 0.9)); 
+			}
+
+			if (lastRun->runtime < avgRuntime * 0.9) {
+				return currentBlocks + 1;
+			}
+		}
+
+		return currentBlocks;
+	}
+	#define OP_TYPE_ERE 0
+	#define OP_TYPE_ELIM 1
 	#define global_bx		(grid_t)(blockDim.x * blockIdx.x)
 	#define global_bx_off	(grid_t)((blockDim.x << 1) * blockIdx.x)
 	#define global_tx		(grid_t)(global_bx + threadIdx.x)
@@ -38,6 +120,72 @@ namespace ParaFROST {
 	#define global_ty		(grid_t)(global_by + threadIdx.y)
 	#define stride_y		(grid_t)(blockDim.y * gridDim.y)
 
+ #define ADAPTIVE_INIT(NTHREADS, MINTHREADS, DEVICEPROPS, FUNCATTR)          \
+        {                                                                      \
+			int deviceCount;													\
+			cudaGetDeviceCount(&deviceCount);									\
+			cudaDeviceProp deviceProp;											\
+			if (deviceCount) {													\
+				cudaGetDeviceProperties(&deviceProp, 0);						\
+			}																	\
+            NTHREADS = deviceProp.maxThreadsPerBlock;                         \
+            MINTHREADS = deviceProp.warpSize;                                 \
+                                                                               \
+            if (FUNCATTR.sharedSizeBytes > deviceProp.sharedMemPerBlock / 2)  \
+                NTHREADS /= 2;                                                 \
+                                                                               \
+            if (FUNCATTR.numRegs > deviceProp.regsPerBlock / NTHREADS)        \
+                NTHREADS /= 2;                                                 \
+                                                                               \
+            NTHREADS = max(MINTHREADS,                                         \
+                           (NTHREADS / DEVICEPROPS.warpSize) * DEVICEPROPS.warpSize); \
+        }
+
+    // Macros for profiling-based tuning
+    #define PROFILE_BASED_TUNING(DATALEN, DEVICEPROPS, FUNCATTR, GRID, BLOCK) \
+        {                                                                     \
+            int minGridSize;                                                  \
+            cudaOccupancyMaxPotentialBlockSize(&minGridSize, &BLOCK,          \
+                                               kernelFunc, 0,                 \
+                                               DEVICEPROPS.maxThreadsPerBlock); \
+                                                                               \
+            BLOCK = max(BLOCK, DEVICEPROPS.warpSize);                         \
+            BLOCK = min(BLOCK, DEVICEPROPS.maxThreadsPerBlock);               \
+            GRID = (DATALEN + BLOCK - 1) / BLOCK;                             \
+                                                                               \
+            GRID = min(GRID, DEVICEPROPS.multiProcessorCount * DEVICEPROPS.maxBlocksPerMultiProcessor); \
+        }
+
+    // Hybrid tuning for iterative workloads
+    #define HYBRID_TUNING(DATALEN, GRID, BLOCK, ITERATION)                     \
+        {                                                                     \
+            if (ITERATION > 0 && DATALEN < GRID * BLOCK) {                    \
+                GRID = (DATALEN + BLOCK - 1) / BLOCK;                         \
+            }                                                                 \
+            grid_t minBlocks = GRID * 0.5;                                    \
+            GRID = max(GRID, minBlocks);                                      \
+        }
+
+    // Dynamic feedback integration
+    #define DYNAMIC_FEEDBACK(KERNEL, BLOCK, GRID)                              \
+        {                                                                     \
+            cudaDeviceSynchronize();                                          \
+            float achievedOccupancy;                                         \
+            cudaOccupancy(&achievedOccupancy, KERNEL, BLOCK, GRID);           \
+                                                                               \
+            if (achievedOccupancy < 0.5) BLOCK /= 2;                          \
+        }
+
+    // Bandwidth-aware tuning
+    #define BANDWIDTH_AWARE_TUNING(BLOCK, DEVICEPROPS, DATASIZE)               \
+        {                                                                     \
+            int threadsPerSM = DEVICEPROPS.maxThreadsPerMultiProcessor / BLOCK; \
+            int memoryTransactions = threadsPerSM * DATASIZE;                 \
+                                                                               \
+            if (memoryTransactions > DEVICEPROPS.memoryBusWidth / 2) {        \
+                BLOCK /= 2;                                                   \
+            }                                                                 \
+        }
 
 	// macros for blocks calculation
 	#define ROUNDUPBLOCKS(DATALEN, NTHREADS)							     \
@@ -77,29 +225,21 @@ namespace ParaFROST {
 			const grid_t MAXBLOCKS = maxGPUThreads /					     \
 										(BLOCK2D.x * BLOCK2D.y);             \
 			const grid_t MINBLOCKS =										 \
-				  grid_t(MAXBLOCKS * (MINOPTS ## _min_blocks));		    	\
+				  grid_t(MAXBLOCKS * (MINOPTS ## _min_blocks));		     \
 			while (BLOCK2D.y > MINTHREADS && realBlocks <= MINBLOCKS) {	     \
 				BLOCK2D.y >>= 1;											 \
 				realBlocks = ROUNDUPBLOCKS(NVARS, BLOCK2D.y);			     \
 			}																 \
 			const grid_t nBlocks = MIN(realBlocks, MAXBLOCKS);             \
 
-	#define OPTIMIZEBLOCKS2(DATALEN, NTHREADS)                               	\
-			assert(DATALEN);                                                 	\
-			assert(NTHREADS);                                                	\
-			assert(maxGPUThreads);                                           	\
-			grid_t nBlocks = MAXREDUCEBLOCKS + 1;								\
-			grid_t multiplier = 0;												\
-			uint32 blockSize = 0;                                      			\
-			while (MAXREDUCEBLOCKS < nBlocks && blockSize < 1024) {				\
-				blockSize = BLOCK1D << multiplier;								\
-				assert(blockSize);												\
-				const grid_t REALTHREADS = (blockSize) << 1;					\
-				const grid_t REALBLOCKS = ROUNDUPBLOCKS(DATALEN, REALTHREADS);   \
-				const grid_t MAXBLOCKS = maxGPUThreads / REALTHREADS;			\
-				nBlocks = MIN(REALBLOCKS, MAXBLOCKS); 							\
-				multiplier++;													\
-			}  																	\
+	#define OPTIMIZEBLOCKS2(DATALEN, NTHREADS)                               \
+			assert(DATALEN);                                                 \
+			assert(NTHREADS);                                                \
+			assert(maxGPUThreads);                                           \
+			const grid_t REALTHREADS = (NTHREADS) << 1;					 \
+			const grid_t REALBLOCKS = ROUNDUPBLOCKS(DATALEN, REALTHREADS); \
+			const grid_t MAXBLOCKS = maxGPUThreads / REALTHREADS;          \
+			const grid_t nBlocks = MIN(REALBLOCKS, MAXBLOCKS);             \
 
 	// macros for shared memory calculation
     #define OPTIMIZESHARED(NTHREADS, MINCAP)                 \

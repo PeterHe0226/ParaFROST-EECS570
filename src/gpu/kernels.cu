@@ -183,10 +183,10 @@ namespace ParaFROST {
 		enabled = true;
 		LOGN2(2, " Counting proof bytes..");
 		OPTIMIZEBLOCKS2(numLits, BLOCK1D);
-		OPTIMIZESHARED(blockSize, sizeof(uint32));
+		OPTIMIZESHARED(BLOCK1D, sizeof(uint32));
 		SYNCALL; // sync any pending kernels or transfers
 		if (gopts.profile_gpu) cutimer->start();
-		cnt_proof << <nBlocks, blockSize, smemSize >> > (literals, numLits);
+		cnt_proof << <nBlocks, BLOCK1D, smemSize >> > (literals, numLits);
 		LASTERR("Proof counting failed");
 		CHECK(cudaMemcpyFromSymbol(hostLBlocks, devLBlocks, nBlocks * sizeof(uint32)));
 		if (gopts.profile_gpu) cutimer->stop(), cutimer->ve += cutimer->gpuTime();
@@ -200,8 +200,8 @@ namespace ParaFROST {
 	{
 		const uint32 cnf_sz = inf.nClauses;
 		OPTIMIZEBLOCKS2(cnf_sz, BLOCK1D);
-		OPTIMIZESHARED(blockSize, sizeof(uint32));
-		cnt_cls << <nBlocks, blockSize, smemSize >> > (cnf);
+		OPTIMIZESHARED(BLOCK1D, sizeof(uint32));
+		cnt_cls << <nBlocks, BLOCK1D, smemSize >> > (cnf);
 		CHECK(cudaMemcpyFromSymbol(hostCBlocks, devCBlocks, nBlocks * sizeof(uint32)));
 		inf.n_cls_after = seqreduceBlocks(hostCBlocks, nBlocks);
 	}
@@ -210,8 +210,8 @@ namespace ParaFROST {
 	{
 		const uint32 cnf_sz = inf.nClauses;
 		OPTIMIZEBLOCKS2(cnf_sz, BLOCK1D);
-		OPTIMIZESHARED(blockSize, sizeof(uint32));
-		cnt_lits << <nBlocks, blockSize, smemSize >> > (cnf);
+		OPTIMIZESHARED(BLOCK1D, sizeof(uint32));
+		cnt_lits << <nBlocks, BLOCK1D, smemSize >> > (cnf);
 		CHECK(cudaMemcpyFromSymbol(hostLBlocks, devLBlocks, nBlocks * sizeof(uint32)));
 		inf.n_lits_after = seqreduceBlocks(hostLBlocks, nBlocks);
 	}
@@ -220,8 +220,8 @@ namespace ParaFROST {
 	{
 		const uint32 cnf_sz = inf.nClauses + (inf.nClauses >> 1);
 		OPTIMIZEBLOCKS2(cnf_sz, BLOCK1D);
-		OPTIMIZESHARED(blockSize, sizeof(uint32) * 2);
-		cnt_cls_lits << <nBlocks, blockSize, smemSize >> > (cnf);
+		OPTIMIZESHARED(BLOCK1D, sizeof(uint32) * 2);
+		cnt_cls_lits << <nBlocks, BLOCK1D, smemSize >> > (cnf);
 		CHECK(cudaMemcpyFromSymbol(hostCBlocks, devCBlocks, nBlocks * sizeof(uint32)));
 		CHECK(cudaMemcpyFromSymbol(hostLBlocks, devLBlocks, nBlocks * sizeof(uint32)));
 		seqreduceBlocks(hostCBlocks, hostLBlocks, nBlocks);
@@ -458,16 +458,29 @@ namespace ParaFROST {
 		dim3 grid2D(1, 1, 1);
 		LOGN2(2, "  configuring ERE kernel with ");
 		OPTIMIZEBLOCKSERE(vars->numElected, block2D, gopts.ere);
+		const grid_t adjustedNBlocks = adjustBlocksBasedOnHistory(nBlocks, OP_TYPE_ERE);
 		OPTIMIZESHARED(block2D.y, SH_MAX_ERE_OUT * sizeof(uint32));
-		grid2D.y = nBlocks;
+		grid2D.y = adjustedNBlocks;
 		LOGENDING(2, 5, "(%d/%d ths, %d/%d bls) and %zd KB shared memory",
 			block2D.y, devProp.warpSize, grid2D.y, MAXBLOCKS, smemSize / KBYTE);
+
+
+		cudaEvent_t start, stop;
+		cudaEventCreate(&start);
+		cudaEventCreate(&stop);
+		cudaEventRecord(start, 0);
 		ere_k << <grid2D, block2D, smemSize >> > (cnf, ot, proof, vars->elected, vars->eliminated);
+		cudaEventRecord(stop, 0);	
+		float runtime = 0.0f;
+    	cudaEventElapsedTime(&runtime, start, stop);
+
+		addKernelPerfCount(runtime, adjustedNBlocks, OP_TYPE_ERE);
 		if (gopts.profile_gpu) cutimer->stop(), cutimer->ere += cutimer->gpuTime();
 		if (gopts.sync_always) {
 			LASTERR("ERE Elimination failed");
 			SYNCALL;
 		}
 	}
+
 
 }
