@@ -30,11 +30,14 @@ along with this program.  If not, see <https://www.gnu.org/licenses/>.
 #include "control.hpp"
 #include "banner.hpp"
 #include "solver.hpp"
+#include "grid.cuh"
+
 
 using namespace ParaFROST;
 
 bool quiet_en = false;
 int  verbose  = -1;
+
 
 int main(int argc, char **argv)
 {   
@@ -73,7 +76,7 @@ int main(int argc, char **argv)
 		if (opt_memoryout > 0) set_memoryout(opt_memoryout);
 		signal_handler(handler_mercy_interrupt, handler_mercy_timeout);
 		parafrost->solve();
-		// cleanupPerfCount();
+		cleanupPerfCount();
 		if (!quiet_en) LOG0("");
 		LOGHEADER(1, 5, "Exit");
 		solver = NULL;
