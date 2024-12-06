@@ -28,5 +28,5 @@ namespace ParaFROST {
 }
 #define VERSION "3.4.1"
 #define OSYSTEM "linux asus-f16 5.15.167.4-microsoft-standard-wsl2 x86_64"
-#define DATE "Thu Dec  5 22:07:06 EST 2024"
+#define DATE "Thu Dec  5 22:27:10 EST 2024"
 #define COMPILER "g++ (Ubuntu 11.4.0-1ubuntu1~22.04) 11.4.0 + nvcc 12.6.85"

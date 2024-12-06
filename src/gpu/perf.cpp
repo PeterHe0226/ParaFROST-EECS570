@@ -1,6 +1,7 @@
 #include "grid.cuh"
 
 namespace ParaFROST {
+	GlobalPerfCount *perf_count_head = nullptr;
     void addKernelPerfCount(float runtime, grid_t blocks, int op_type) {
 		float previous_runtime = 0.0;
 		GlobalPerfCount *r = (GlobalPerfCount *)malloc(sizeof(GlobalPerfCount));

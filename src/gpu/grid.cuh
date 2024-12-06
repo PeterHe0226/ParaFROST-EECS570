@@ -34,7 +34,7 @@ namespace ParaFROST {
 		GlobalPerfCount *next;
 	};
 
-	extern GlobalPerfCount *perf_count_head = nullptr;
+	extern GlobalPerfCount *perf_count_head;
 	void addKernelPerfCount(float runtime, grid_t blocks, int op_type);
 	void cleanupPerfCount();
 	grid_t adjustBlocksBasedOnHistory(grid_t currentBlocks, int op_type);
