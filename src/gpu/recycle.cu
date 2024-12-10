@@ -28,31 +28,57 @@ using namespace cub;
 
 namespace ParaFROST {
 
-	//=================================//
-	//	CNF Garbage Collection on GPU  //
-	//=================================//
-	__global__ void scatter_k(const CNF* __restrict__ src, S_REF* __restrict__ scatter, addr_t __restrict__ stencil)
+	__global__ void scatter_k(const CNF* __restrict__ src, 
+										S_REF* __restrict__ scatter, 
+										addr_t __restrict__ stencil) 
 	{
-		uint32 tid = global_tx;
+		uint32_t tid = blockIdx.x * blockDim.x + threadIdx.x;
+		uint32_t stride = gridDim.x * blockDim.x;
+		__shared__ SCLAUSE sharedClauses[BLOCK1D];
+		const uint32_t lane = threadIdx.x;
+
 		while (tid < src->size()) {
-			const SCLAUSE& c = src->clause(tid);
-			if (c.deleted()) stencil[tid] = 0, scatter[tid] = 0;
-			else stencil[tid] = 1, scatter[tid] = c.size() + DC_NBUCKETS;
-			tid += stride_x;
+			if (lane < src->size()) {
+				sharedClauses[lane] = src->clause(tid);
+			}
+			__syncthreads();
+			const SCLAUSE& c = sharedClauses[lane];
+			if (c.deleted()) {
+				stencil[tid] = 0;
+				scatter[tid] = 0;
+			} else {
+				stencil[tid] = 1;
+				scatter[tid] = c.size() + DC_NBUCKETS;
+			}
+
+			tid += stride;
+			__syncthreads();
 		}
 	}
 
-	__global__ void compact_k(CNF* __restrict__ src, CNF* __restrict__ dest, const S_REF* __restrict__ scatter, const addr_t __restrict__ stencil)
-	{
-		uint32 tid = global_tx;
+
+	__global__ void compact_k(const CNF* __restrict__ src, 
+										CNF* __restrict__ dest, 
+										const S_REF* __restrict__ scatter, 
+										const addr_t __restrict__ stencil) {
+		uint32_t tid = blockIdx.x * blockDim.x + threadIdx.x;
+		uint32_t stride = gridDim.x * blockDim.x;
+		__shared__ SCLAUSE sharedClauses[BLOCK1D];
+
 		while (tid < src->size()) {
-			if (stencil[tid]) {
+			const bool isActive = stencil[tid];
+
+			if (isActive) {
 				const S_REF new_r = scatter[tid];
-				new (dest->cref(new_r)) SCLAUSE(src->clause(tid));
-				assert(src->clause(tid).size() == dest->cref(new_r)->size());
-				assert(src->clause(tid).capacity() == dest->cref(new_r)->capacity());
+
+				sharedClauses[threadIdx.x] = src->clause(tid);
+				__syncthreads();
+
+				new (dest->cref(new_r)) SCLAUSE(sharedClauses[threadIdx.x]);
 			}
-			tid += stride_x;
+
+			tid += stride;
+			__syncthreads();
 		}
 	}
 

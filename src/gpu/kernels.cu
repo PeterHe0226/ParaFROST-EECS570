@@ -475,7 +475,8 @@ namespace ParaFROST {
 		cudaEventRecord(stop, 0);	
 		float runtime = 0.0f;
     	cudaEventElapsedTime(&runtime, start, stop);
-
+		cudaEventDestroy(start);
+		cudaEventDestroy(stop);
 		addKernelPerfCount(runtime, adjustedNBlocks, OP_TYPE_ERE);
 		
 		if (gopts.profile_gpu) cutimer->stop(), cutimer->ere += cutimer->gpuTime();
