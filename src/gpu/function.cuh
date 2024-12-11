@@ -18,315 +18,286 @@ along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 #ifndef __FUN_
 #define __FUN_
-
 #include "elimination.cuh"
 
 namespace ParaFROST {
+	constexpr uint32  TABLE_LENGTH = 64;
+	typedef uint64 TruthTable[TABLE_LENGTH];
 
-	// inspired by the function table reassoning in Lingeling
-
-	#define FUN_DBG 0
-
-	__constant__ uint64 MAGICCONSTS[6] = {
-	  0xaaaaaaaaaaaaaaaaULL, 0xccccccccccccccccULL, 0xf0f0f0f0f0f0f0f0ULL,
-	  0xff00ff00ff00ff00ULL, 0xffff0000ffff0000ULL, 0xffffffff00000000ULL,
+	__constant__ uint64 BITMASKS[6] = {
+    	0x5555555555555555ULL, 0x3333333333333333ULL, 0x0F0F0F0F0F0F0F0FULL,
+    	0x00FF00FF00FF00FFULL, 0x0000FFFF0000FFFFULL, 0x00000000FFFFFFFFULL
 	};
 
-	constexpr int	 MAXFUNVAR = 12;
-	constexpr uint32 FUNTABLEN = 64;
-	constexpr uint64 ALLONES = ~0ULL;
+	constexpr int MAX_VARIABLE_COUNT = 12;
+	constexpr uint64 FULL_MASK = ~0ULL;
 
-	typedef uint64 Fun[FUNTABLEN];
-
-	_PFROST_D_ void falsefun(Fun f)
+	_PFROST_D_ void clause2fun(const int& variable, const bool& polarity, TruthTable table)
 	{
-		#pragma unroll
-		for (uint32 i = 0; i < FUNTABLEN; ++i)
-			f[i] = 0ULL;
-	}
+		if (variable >= 6) {
+			uint64 alternatingMask = polarity ? FULL_MASK : 0ULL;
+			int segmentCounter = 0;
+			int segmentSize = 1 << (variable - 6);
 
-	_PFROST_D_ void truefun(Fun f)
-	{
-		#pragma unroll
-		for (uint32 i = 0; i < FUNTABLEN; ++i)
-			f[i] = ALLONES;
-	}
-
-	_PFROST_D_ bool isfalsefun(const Fun f)
-	{
-		#pragma unroll
-		for (uint32 i = 0; i < FUNTABLEN; ++i)
-			if (f[i]) return false;
-		return true;
-	}
-
-	_PFROST_D_ bool istruefun(const Fun f)
-	{
-		#pragma unroll
-		for (uint32 i = 0; i < FUNTABLEN; ++i)
-			if (f[i] != ALLONES) return false;
-		return true;
-	}
-
-	_PFROST_D_ void orfun(Fun a, const Fun b)
-	{
-		#pragma unroll
-		for (uint32 i = 0; i < FUNTABLEN; ++i)
-			a[i] |= b[i];
-	}
-
-	_PFROST_D_ void andfun(Fun a, const Fun b)
-	{
-		#pragma unroll
-		for (uint32 i = 0; i < FUNTABLEN; ++i)
-			a[i] &= b[i];
-	}
-
-	_PFROST_D_ void copyfun(Fun a, const Fun b)
-	{
-		#pragma unroll
-		for (uint32 i = 0; i < FUNTABLEN; ++i)
-			a[i] = b[i];
-	}
-
-	_PFROST_D_ void clause2fun(const int& v, const bool& sign, Fun f)
-	{
-		assert(v >= 0 && v < MAXFUNVAR);
-		if (v < 6) {
-			uint64 val = MAGICCONSTS[v];
-			if (sign) val = ~val;
 			#pragma unroll
-			for (uint32 i = 0; i < FUNTABLEN; ++i)
-				f[i] |= val;
-		}
-		else {
-			uint64 val = sign ? ALLONES : 0ULL;
-			int j = 0;
-			int sv = 1 << (v - 6);
-			#pragma unroll
-			for (uint32 i = 0; i < FUNTABLEN; ++i) {
-				f[i] |= val;
-				if (++j >= sv) {
-					val = ~val;
-					j = 0;
+			for (uint32 i = 0; i < TABLE_LENGTH; ++i) {
+				table[i] |= alternatingMask;
+				if (++segmentCounter >= segmentSize) {
+					alternatingMask = ~alternatingMask;
+					segmentCounter = 0;
+				} else {
+					continue;
 				}
 			}
+    	} else {
+			uint64 mask = BITMASKS[variable];
+			if (polarity) mask = ~mask;
+			#pragma unroll
+			for (uint32 i = 0; i < TABLE_LENGTH; ++i) {
+				table[i] |= mask;
+			}
+    	}
+	}
+
+	_PFROST_D_ void orfun(TruthTable dest, const TruthTable source)
+	{
+		#pragma unroll
+		for (uint32 i = 0; i < TABLE_LENGTH; ++i) {
+			dest[i] |= source[i];
 		}
 	}
 
-	_PFROST_D_ bool buildfuntab
-	(
-		const uint32& lit,
-		const uint32* varcore,
-		CNF& cnf,
-		OT& ot, 
-		Fun cls, // shared memory
-		Fun f    // local memory
-	)
+	_PFROST_D_ void andfun(TruthTable dest, const TruthTable source)
 	{
-		assert(lit > 1);
-		truefun(f);
-		OL& list = ot[lit];
-		forall_occurs(list, i) {
-			SCLAUSE& c = cnf[*i];
-			if (c.learnt()) continue;
-			assert(!c.deleted());
-			falsefun(cls);
-			forall_clause(c, k) {
-				const uint32 other = *k;
-				if (other == lit) continue;
-				assert(other != FLIP(lit));
-				// mvar[0 : MAXFUNVAR - 1] here has to be unique 
-				// and not repeated or in other words mapped 
-				// monotonically from 0 to max. frozen variable
-				const uint32 mvar = varcore[ABS(other)]; 
-				if (mvar >= MAXFUNVAR) return false; 
-				clause2fun(mvar, SIGN(other), cls);
+		#pragma unroll
+		for (uint32 i = 0; i < TABLE_LENGTH; ++i) {
+			dest[i] &= source[i];
+		}
+	}
+
+	_PFROST_D_ void copyfun(TruthTable dest, const TruthTable source)
+	{
+		#pragma unroll
+		for (uint32 i = 0; i < TABLE_LENGTH; ++i) {
+			dest[i] = source[i];
+		}
+	}
+
+	_PFROST_D_ void falsefun(TruthTable table)
+	{
+		#pragma unroll
+    	for (uint32 i = 0; i < TABLE_LENGTH; ++i) {
+        	table[i] = 0ULL;
+    	}
+	}
+
+	_PFROST_D_ void truefun(TruthTable table)
+	{
+		 #pragma unroll
+		for (uint32 i = 0; i < TABLE_LENGTH; ++i) {
+			table[i] = FULL_MASK;
+		}
+	}
+
+	_PFROST_D_ uint64 collapsefun(const TruthTable firstTable, const TruthTable  secondTable)
+	{
+		uint64 combinedResult = 0;
+		#pragma unroll
+		for (uint32 i = 0; i < TABLE_LENGTH; ++i) {
+			combinedResult |= (firstTable[i] & secondTable[i]);
+		}
+		return combinedResult;
+	}
+
+	
+
+	_PFROST_D_ bool isfalsefun(const TruthTable table)
+	{
+		#pragma unroll
+		for (uint32 i = 0; i < TABLE_LENGTH; ++i) {
+			if (table[i]!= 0ULL) {
+				return false;
 			}
-			assert(!isfalsefun(cls));
-			assert(!istruefun(cls));
-			andfun(f, cls);
 		}
 		return true;
 	}
 
-	_PFROST_D_ void buildfuntab(
-		const uint32& lit,
-		const uint32* varcore,
-		const int& tail, 
-		const OL& ol, 
-		CNF& cnf, 
-		Fun cls, // shared memory
-		Fun fun, // local memory
-		bool& core)
+	_PFROST_D_ bool istruefun(const TruthTable table)
 	{
-		assert(lit > 1);
-		for (int j = 0; j < tail; ++j) {
-			SCLAUSE& c = cnf[ol[j]];
-			if (c.learnt()) continue;
-			assert(!c.deleted());
-			falsefun(cls);
-			forall_clause(c, k) {
-				const uint32 other = *k;
-				if (other == lit) continue;
-				assert(other != FLIP(lit));
-				const uint32 mvar = varcore[ABS(other)];
-				assert(mvar < MAXFUNVAR);
-				clause2fun(mvar, SIGN(other), cls);
-			}
-			assert(!isfalsefun(cls));
-			assert(!istruefun(cls));
-			andfun(fun, cls);
-		}
-		if (isfalsefun(fun)) {
-			cnf[ol[tail]].melt(); // non-gate clause (not resolved with its kind)
-			core = true;
-		}
-	}
-
-	_PFROST_D_ uint64 collapsefun(const Fun b, const Fun c)
-	{
-		uint64 allzero = 0;
 		#pragma unroll
-		for (uint32 i = 0; i < FUNTABLEN; ++i)
-			allzero |= (b[i] & c[i]);
-		return allzero;
+		for (uint32 i = 0; i < TABLE_LENGTH; ++i) {
+			if (table[i] != FULL_MASK) {
+				return false;
+			}
+		}
+		return true;
 	}
 
-	_PFROST_D_ bool countCoreSubstituted(
-		const uint32& x,
-		const uint32& nClsBefore,
-		CNF& cnf,
-		OL& me,
-		OL& other,
-		uint32& nElements,
-		uint32& nAddedCls,
-		uint32& nAddedLits)
+
+	_PFROST_D_ bool buildfuntab(const uint32& literal, const uint32* variableMap, CNF& formula, OT& occurrenceTracker, TruthTable sharedTable, TruthTable localTable)
 	{
-		assert(x);
-		assert(!nElements);
-		assert(!nAddedCls);
-		assert(!nAddedLits);
-		const int rlimit = kOpts->ve_clause_max;
-		// check if proof bytes has to be calculated
+		truefun(localTable);
+		OL& occurrences = occurrenceTracker[literal];
+		forall_occurs(occurrences, i) {
+			SCLAUSE& clause = formula[*i];
+        	if (clause.learnt()) {
+				continue;
+			}
+			falsefun(sharedTable);
+			forall_clause(clause, j) {
+				const uint32 otherLiteral = *j;
+				if (otherLiteral == literal) continue;
+				const uint32 mappedVariable = variableMap[ABS(otherLiteral)];
+				if (mappedVariable >= MAX_VARIABLE_COUNT) {
+					return false;
+				} else {
+					clause2fun(mappedVariable, SIGN(otherLiteral), sharedTable);
+				}
+			}
+			andfun(localTable, sharedTable);
+		}
+		return true;
+	}
+
+	_PFROST_D_ void buildfuntab(const uint32& literal,const uint32* variableMapping,const int& limit,const OL& occurrences,CNF& formula,TruthTable sharedMemTable,TruthTable localTable,bool& isCore)
+	{
+		 for (int index = 0; index < limit; ++index) {
+			SCLAUSE& clause = formula[occurrences[index]];
+			if (clause.learnt()) {
+				continue;
+			}
+			falsefun(sharedMemTable);
+			forall_clause(clause, iter) {
+				const uint32 currentLiteral = *iter;
+				if (currentLiteral == literal) {
+					continue;
+				}
+				const uint32 mappedVariable = variableMapping[ABS(currentLiteral)];
+				clause2fun(mappedVariable, SIGN(currentLiteral), sharedMemTable);
+			}
+			andfun(localTable, sharedMemTable);
+    	}
+
+		if (!isfalsefun(localTable)) {
+			return;
+    	} else{
+			isCore = true;
+        	formula[occurrences[limit]].melt();
+		}
+	}
+
+
+	_PFROST_D_ bool countCoreSubstituted(const uint32& variable,const uint32& initialClauseCount,CNF& formula,OL& positiveOccurrences,OL& negativeOccurrences,uint32& coreCount,uint32& addedClauses,uint32& addedLiterals)
+	{
+		const int clauseLimit = kOpts->ve_clause_max;
 		if (kOpts->proof_en) {
-			uint32 proofBytes = 0;
-			forall_occurs(me, i) {
-				SCLAUSE& ci = cnf[*i];
-				if (ci.learnt()) continue;
-				const bool ci_m = ci.molten();
-				forall_occurs(other, j) {
-					SCLAUSE& cj = cnf[*j];
-					if (cj.original() && (!ci_m || !cj.molten())) {
-						const int rsize = mergeProof(x, ci, cj, proofBytes);
-						if (rsize == 1)
-							nElements++;
-						else if (rsize) {
-							if (++nAddedCls > nClsBefore || (rlimit && rsize > rlimit)) return true;
-							nAddedLits += rsize;
+			uint32 proofSize = 0;
+			forall_occurs(positiveOccurrences, posIndex) {
+				SCLAUSE& positiveClause = formula[*posIndex];
+				if (positiveClause.learnt()) {
+					continue;
+				}
+				const bool isMolten = positiveClause.molten();
+				forall_occurs(negativeOccurrences, negIndex) {
+					SCLAUSE& negativeClause = formula[*negIndex];
+					if (negativeClause.original() && (!isMolten || !negativeClause.molten())) {
+						const int proofLength = mergeProof(variable, positiveClause, negativeClause, proofSize);
+						if (proofLength == 1)
+							coreCount++;
+						else if (proofLength) {
+							if (++addedClauses > initialClauseCount || (clauseLimit && proofLength > clauseLimit))
+								return true;
+							addedLiterals += proofLength;
 						}
 					}
 				}
-			}
+        	}
+			if (coreCount > ADDEDCLS_MAX  || proofSize > ADDEDPROOF_MAX){
+				return true;
+			} 
 
-			// GUARD for compressed proof size and #units
-			if (nElements > ADDEDCLS_MAX || proofBytes > ADDEDPROOF_MAX) return true;
+        	coreCount = ENCODEPROOFINFO(coreCount, proofSize);
 
-			nElements = ENCODEPROOFINFO(nElements, proofBytes);
-
-			#if FUN_DBG
-			printf("c  Variable %d: counted %d units and %d proof bytes\n", x, nElements, proofBytes);
-			#endif
-		}
-		else {
-			forall_occurs(me, i) {
-				SCLAUSE& ci = cnf[*i];
-				if (ci.learnt()) continue;
-				const bool ci_m = ci.molten();
-				forall_occurs(other, j) {
-					SCLAUSE& cj = cnf[*j];
-					if (cj.original() && (!ci_m || !cj.molten())) {
-						const int rsize = merge(x, ci, cj);
-						if (rsize == 1)
-							nElements++;
-						else if (rsize) {
-							if (++nAddedCls > nClsBefore || (rlimit && rsize > rlimit)) return true;
-							nAddedLits += rsize;
+		} else {
+			forall_occurs(positiveOccurrences, posIndex) {
+				SCLAUSE& positiveClause = formula[*posIndex];
+				if (positiveClause.learnt()) {
+					continue;
+				}
+				const bool isMolten = positiveClause.molten();
+				forall_occurs(negativeOccurrences, negIndex) {
+					SCLAUSE& negativeClause = formula[*negIndex];
+					if (negativeClause.original() && (!isMolten || !negativeClause.molten())) {
+						const int clauseSize = merge(variable, positiveClause, negativeClause);
+						if (clauseSize == 1)
+							coreCount++;
+						else if (clauseSize) {
+							if (++addedClauses > initialClauseCount || (clauseLimit && clauseSize > clauseLimit)){
+								return true;
+							}
+							addedLiterals += clauseSize;
 						}
 					}
 				}
+        	}
+		}
+
+		if (addedClauses > ADDEDCLS_MAX || addedLiterals > ADDEDLITS_MAX) {
+			return true;
+		}else if (kOpts->ve_lbound_en) {
+			uint32 initialLiteralCount = 0;
+			countLitsBefore(formula, positiveOccurrences, initialLiteralCount);
+			countLitsBefore(formula, negativeOccurrences, initialLiteralCount);
+			if (addedLiterals > initialLiteralCount) {
+				return true;
+			} else {
+				return false;
 			}
-		}
+    	}
 
-		// GUARD for compressed variable limits
-		if (nAddedCls > ADDEDCLS_MAX || nAddedLits > ADDEDLITS_MAX) return true;
-
-		// check bound on literals
-		if (kOpts->ve_lbound_en) {
-			uint32 nLitsBefore = 0;
-			countLitsBefore(cnf, me, nLitsBefore);
-			countLitsBefore(cnf, other, nLitsBefore);
-			if (nAddedLits > nLitsBefore) return true;
-		}
-
-		return false;
+    	return false;
 	}
 
-	_PFROST_D_ bool find_fun_gate(
-		const uint32& p,
-		const uint32& n,
-		const uint32& nOrgCls,
-		const uint32* varcore,
-		CNF& cnf, 
-		OT& ot,
-		uint32* shmem, 
-		uint32& nElements,
-		uint32& nAddedCls,
-		uint32& nAddedLits)
+	_PFROST_D_ bool find_fun_gate(const uint32& positiveLiteral,const uint32& negativeLiteral,const uint32& originalClauseCount,const uint32* variableMapping,CNF& formula,OT& occurrenceTracker,uint32* sharedMemory,uint32& coreElementCount,uint32& newClauses,uint32& newLiterals)
 	{
-		assert(p > 1);
-		assert(varcore);
-		assert(checkMolten(cnf, ot[p], ot[n]));
+		TruthTable positiveTable, negativeTable;
+		uint64* sharedTable = (uint64*)sharedMemory;
 
-		uint64* cls = (uint64*)shmem;
+		if (buildfuntab(positiveLiteral, variableMapping, formula, occurrenceTracker, sharedTable, positiveTable) &&
+        buildfuntab(negativeLiteral, variableMapping, formula, occurrenceTracker, sharedTable, negativeTable)) {
+			if (!collapsefun(positiveTable, negativeTable)) {
+				TruthTable& gateTable = positiveTable;
+				OL& positiveOccurrenceList = occurrenceTracker[positiveLiteral];
+				bool isCore = false;
 
-		Fun pos, neg;
-		if (buildfuntab(p, varcore, cnf, ot, cls, pos) && buildfuntab(n, varcore, cnf, ot, cls, neg)) {
-			if (!collapsefun(pos, neg)) {
-				// core optimization (minimality not guaranteed)
-				Fun& fun = pos;
-				OL& poss = ot[p];
-				bool core = false;
-				for (int i = poss.size() - 1; i >= 0; i--) {
-					copyfun(fun, neg);
-					if (cnf[poss[i]].original())
-						buildfuntab(p, varcore, i, poss, cnf, cls, fun, core);
+				for (int i = positiveOccurrenceList.size() - 1; i >= 0; i--) {
+					copyfun(gateTable, negativeTable);
+					if (formula[positiveOccurrenceList[i]].original()){
+						buildfuntab(positiveLiteral, variableMapping, i, positiveOccurrenceList, formula, sharedTable, gateTable, isCore);
+					}
 				}
-				OL& negs = ot[n];
-				for (int i = negs.size() - 1; i >= 0; i--) {
-					truefun(fun);
-					if (cnf[negs[i]].original())
-						buildfuntab(n, varcore, i, negs, cnf, cls, fun, core);
+				OL& negativeOccurrenceList = occurrenceTracker[negativeLiteral];
+				for (int i = negativeOccurrenceList.size() - 1; i >= 0; i--) {
+					truefun(gateTable);
+					if (formula[negativeOccurrenceList[i]].original()){
+						buildfuntab(negativeLiteral, variableMapping, i, negativeOccurrenceList, formula, sharedTable, gateTable, isCore);
+					}
 				}
-				// check resolvability
-				nElements = 0, nAddedCls = 0, nAddedLits = 0;
-				if (countCoreSubstituted(ABS(p), nOrgCls, cnf, poss, negs, nElements, nAddedCls, nAddedLits)) {
-					if (core) freezeClauses(cnf, poss, negs);
+
+				coreElementCount = 0;
+				newClauses = 0;
+				newLiterals = 0;
+				if (countCoreSubstituted(ABS(positiveLiteral), originalClauseCount, formula, positiveOccurrenceList, negativeOccurrenceList, coreElementCount, newClauses, newLiterals)) {
+					if (isCore) {
+						freezeClauses(formula, positiveOccurrenceList, negativeOccurrenceList);
+					}
 					return false;
 				}
-				// can be substituted
-				#if FUN_DBG
-				printf("c  Fun Gate %d ", ABS(p));
-				printf("found ==> added = %d, deleted = %d\n", nAddedCls, poss.size() + negs.size());
-				pClauseSet(cnf, ot, ABS(p));
-				#endif	
+
 				return true;
 			}
-		}
-		return false;
+    	}
+    	return false;
 	}
-
 } 
-
-
 #endif
